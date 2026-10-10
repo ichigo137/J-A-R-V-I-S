@@ -685,6 +685,26 @@ class JarvisVoiceAssistant:
         from urllib.parse import quote_plus
 
         normalized = re.sub(r"\s+", " ", lower_text).strip()
+        # Accept compound imperative commands, e.g. "open firefox and search for lemon".
+        compound_search = re.fullmatch(
+            r"(?:please )?(?:open|launch|start) firefox and (?:search for|google|look up) (.+?)[.! ]*",
+            normalized,
+        )
+        if compound_search:
+            query = compound_search.group(1).strip()
+            url = "https://www.google.com/search?q=" + quote_plus(query)
+            try:
+                subprocess.Popen(
+                    ["cmd", "/c", "start", "", "firefox", url],
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                reply = f"Opened a Google search for {query} in Firefox."
+            except OSError as exc:
+                reply = f"I couldn't launch Firefox: {exc}"
+            self.memory.add("user", user_text)
+            self.memory.add("assistant", reply)
+            return reply
+
         search_match = re.fullmatch(
             r"(?:please )?(?:search for|google|look up) (.+?)(?: in firefox| on firefox| in browser)?",
             normalized,
