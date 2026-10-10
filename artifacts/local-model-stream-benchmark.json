@@ -1,0 +1,77 @@
+{
+  "timestamp_utc": "2026-10-10T06:24:10.349275+00:00",
+  "base_url": "http://127.0.0.1:1234/v1",
+  "model": "qwen2.5-coder-1.5b-unsensored-dpo-i1",
+  "mode": "streaming",
+  "warmup_requests_requested": 1,
+  "warmup_requests_completed": 1,
+  "measured_requests_requested": 3,
+  "measured_requests_completed": 3,
+  "error": null,
+  "latency_seconds": {
+    "samples": [
+      1.5637,
+      1.5439,
+      1.5491
+    ],
+    "median": 1.5491,
+    "p95": 1.5622
+  },
+  "time_to_first_chunk_seconds": {
+    "samples": [
+      0.0482,
+      0.0377,
+      0.0363
+    ],
+    "median": 0.0377,
+    "p95": 0.0472,
+    "note": "Streaming event arrival, not guaranteed to equal the first generated token."
+  },
+  "requests": [
+    {
+      "latency_seconds": 1.5636784999996962,
+      "time_to_first_chunk_seconds": 0.048249200000100245,
+      "completion_tokens_reported": null,
+      "response_text": "Sure! A local AI assistant can work without a cloud API by using a variety of techniques and tools. Here's a step-by-step guide on how it can be done:\n\n1. **Data Collection**: The first step is to collect data that the AI assistant will use for training. This could be any type of data, such as text, images, or audio files. You can collect this data locally by using a variety of tools and methods, such as:\n   - **",
+      "reported_tokens_per_second_end_to_end": null,
+      "reported_generation_tokens_per_second": null
+    },
+    {
+      "latency_seconds": 1.5438818000002357,
+      "time_to_first_chunk_seconds": 0.037684900000385824,
+      "completion_tokens_reported": null,
+      "response_text": "Sure! A local AI assistant can work without a cloud API by using a variety of techniques and tools. Here's a step-by-step guide on how it can be done:\n\n1. **Data Collection**: The first step is to collect data that the AI assistant will use for training. This could be any type of data, such as text, images, or audio files. You can collect this data locally by using a variety of tools and methods, such as:\n   - **",
+      "reported_tokens_per_second_end_to_end": null,
+      "reported_generation_tokens_per_second": null
+    },
+    {
+      "latency_seconds": 1.5490614000000278,
+      "time_to_first_chunk_seconds": 0.036261000000195054,
+      "completion_tokens_reported": null,
+      "response_text": "Sure! A local AI assistant can work without a cloud API by using a variety of techniques and tools. Here's a step-by-step guide on how it can be done:\n\n1. **Data Collection**: The first step is to collect data that the AI assistant will use for training. This could be any type of data, such as text, images, or audio files. You can collect this data locally by using a variety of tools and methods, such as:\n   - **",
+      "reported_tokens_per_second_end_to_end": null,
+      "reported_generation_tokens_per_second": null
+    }
+  ],
+  "system_memory": {
+    "total_bytes": 8212975616,
+    "available_before_bytes": 1723355136,
+    "available_after_bytes": 1783312384,
+    "available_delta_bytes": 59957248,
+    "minimum_available_sampled_bytes": 1696759808,
+    "peak_available_ram_drop_bytes": 26595328,
+    "sampling_interval_seconds": 0.1
+  },
+  "model_runtime_processes": {
+    "before": {
+      "process_count": 6,
+      "rss_bytes": 910491648
+    },
+    "after": {
+      "process_count": 6,
+      "rss_bytes": 927383552
+    },
+    "rss_delta_bytes": 16891904,
+    "note": "Best-effort process-name match; RSS and 100ms RAM samples may miss true peak usage."
+  }
+}

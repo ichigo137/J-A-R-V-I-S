@@ -1,0 +1,28 @@
+{
+  "timestamp_utc": "2026-10-10T06:11:54.930037+00:00",
+  "base_url": "http://127.0.0.1:1234/v1",
+  "model": "qwen2.5-coder-1.5b-unsensored-dpo-i1",
+  "latency_seconds": 0.575,
+  "completion_tokens_reported": 7,
+  "tokens_per_second_reported": 12.18,
+  "response_text": "JARVIS_BENCHMARK_OK",
+  "system_memory": {
+    "total_bytes": 8212975616,
+    "available_before_bytes": 1143447552,
+    "available_at_request_start_bytes": 1143439360,
+    "available_after_bytes": 1104269312,
+    "available_delta_bytes": -39178240
+  },
+  "model_runtime_processes": {
+    "before": {
+      "process_count": 6,
+      "rss_bytes": 1592602624
+    },
+    "after": {
+      "process_count": 6,
+      "rss_bytes": 1617760256
+    },
+    "rss_delta_bytes": 25157632,
+    "note": "Best-effort process-name match; model memory may be in child processes not matched here."
+  }
+}

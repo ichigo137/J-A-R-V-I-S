@@ -1,0 +1,91 @@
+{
+  "timestamp_utc": "2026-10-10T06:22:40.813660+00:00",
+  "base_url": "http://127.0.0.1:1234/v1",
+  "model": "qwen2.5-coder-1.5b-unsensored-dpo-i1",
+  "mode": "non_streaming",
+  "warmup_requests_requested": 1,
+  "warmup_requests_completed": 1,
+  "measured_requests_requested": 5,
+  "measured_requests_completed": 5,
+  "error": null,
+  "latency_seconds": {
+    "samples": [
+      0.157,
+      0.1545,
+      0.1418,
+      0.1497,
+      0.1545
+    ],
+    "median": 0.1545,
+    "p95": 0.1565
+  },
+  "time_to_first_chunk_seconds": {
+    "samples": [],
+    "median": null,
+    "p95": null,
+    "note": "Streaming event arrival, not guaranteed to equal the first generated token."
+  },
+  "requests": [
+    {
+      "latency_seconds": 0.15696659999957774,
+      "time_to_first_chunk_seconds": null,
+      "completion_tokens_reported": 7,
+      "response_text": "JARVIS_BENCHMARK_OK",
+      "reported_tokens_per_second_end_to_end": 44.6,
+      "reported_generation_tokens_per_second": null
+    },
+    {
+      "latency_seconds": 0.1544579999999769,
+      "time_to_first_chunk_seconds": null,
+      "completion_tokens_reported": 7,
+      "response_text": "JARVIS_BENCHMARK_OK",
+      "reported_tokens_per_second_end_to_end": 45.32,
+      "reported_generation_tokens_per_second": null
+    },
+    {
+      "latency_seconds": 0.14179280000007566,
+      "time_to_first_chunk_seconds": null,
+      "completion_tokens_reported": 7,
+      "response_text": "JARVIS_BENCHMARK_OK",
+      "reported_tokens_per_second_end_to_end": 49.37,
+      "reported_generation_tokens_per_second": null
+    },
+    {
+      "latency_seconds": 0.1497322000004715,
+      "time_to_first_chunk_seconds": null,
+      "completion_tokens_reported": 7,
+      "response_text": "JARVIS_BENCHMARK_OK",
+      "reported_tokens_per_second_end_to_end": 46.75,
+      "reported_generation_tokens_per_second": null
+    },
+    {
+      "latency_seconds": 0.15446629999951256,
+      "time_to_first_chunk_seconds": null,
+      "completion_tokens_reported": 7,
+      "response_text": "JARVIS_BENCHMARK_OK",
+      "reported_tokens_per_second_end_to_end": 45.32,
+      "reported_generation_tokens_per_second": null
+    }
+  ],
+  "system_memory": {
+    "total_bytes": 8212975616,
+    "available_before_bytes": 1129881600,
+    "available_after_bytes": 1110478848,
+    "available_delta_bytes": -19402752,
+    "minimum_available_sampled_bytes": 1109504000,
+    "peak_available_ram_drop_bytes": 20377600,
+    "sampling_interval_seconds": 0.1
+  },
+  "model_runtime_processes": {
+    "before": {
+      "process_count": 6,
+      "rss_bytes": 1222729728
+    },
+    "after": {
+      "process_count": 6,
+      "rss_bytes": 1241726976
+    },
+    "rss_delta_bytes": 18997248,
+    "note": "Best-effort process-name match; RSS and 100ms RAM samples may miss true peak usage."
+  }
+}
