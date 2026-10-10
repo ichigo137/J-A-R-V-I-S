@@ -60,3 +60,14 @@ F:\JARVIS2.0\
 * **M1 Cognitive Kernel**: `NOT_STARTED`
 
 See [DEVELOPMENT_CONTEXT.md](file:///f:/JARVIS2.0/DEVELOPMENT_CONTEXT.md) and [project_state.yaml](file:///f:/JARVIS2.0/project_state.yaml) for full details.
+
+
+## Local model benchmark (developer utility)
+
+With LM Studio running and a language model already loaded, measure one short local inference request and capture latency and memory snapshots:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\benchmark_local_model.py --model qwen2.5-coder-1.5b-unsensored-dpo-i1 --output artifacts\local-model-benchmark.json
+```
+
+The benchmark does **not** load or unload models. It stops by default when available system RAM is below 1 GiB to avoid stressing a constrained host. The report's process RSS is best-effort and is not a guaranteed peak-memory measurement. Run only after closing memory-heavy applications or unloading oversized models if the guard trips.
