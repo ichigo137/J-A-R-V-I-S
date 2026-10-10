@@ -378,7 +378,7 @@ class LLMEngine:
                 local_client = OpenAI(
                     api_key="lm-studio",
                     base_url=os.environ.get("JARVIS_LOCAL_BASE_URL", "http://127.0.0.1:1234/v1"),
-                    timeout=1.5,
+                    timeout=120.0,
                     max_retries=0,
                 )
                 available = local_client.models.list().data
@@ -629,16 +629,56 @@ class JarvisVoiceAssistant:
         # Minimal deterministic desktop actions do not depend on an LLM.
         # Only launch a named, known Windows application on a direct request.
         lower_text = user_text.lower().strip().rstrip(".!?")
-        if lower_text in {"open notepad", "launch notepad", "start notepad", "open windows notepad"}:
-            import subprocess
+        import subprocess
+        import webbrowser
+
+        # Explicit allow-listed desktop commands execute independently of the LLM.
+        app_commands = {
+            "open notepad": (["notepad.exe"], "Notepad"),
+            "launch notepad": (["notepad.exe"], "Notepad"),
+            "start notepad": (["notepad.exe"], "Notepad"),
+            "open firefox": (["cmd", "/c", "start", "", "firefox"], "Firefox"),
+            "launch firefox": (["cmd", "/c", "start", "", "firefox"], "Firefox"),
+            "start firefox": (["cmd", "/c", "start", "", "firefox"], "Firefox"),
+            "open spotify": (["cmd", "/c", "start", "", "spotify:"], "Spotify"),
+            "launch spotify": (["cmd", "/c", "start", "", "spotify:"], "Spotify"),
+        }
+        if lower_text in app_commands:
+            command, app_name = app_commands[lower_text]
             try:
-                subprocess.Popen(["notepad.exe"])
-                self.memory.add("user", user_text)
-                reply = "Opening Notepad now, sir."
-                self.memory.add("assistant", reply)
-                return reply
+                subprocess.Popen(command, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                reply = f"Opening {app_name} now, sir."
             except OSError as exc:
-                return f"I couldn't open Notepad: {exc}"
+                reply = f"I couldn't open {app_name}: {exc}"
+            self.memory.add("user", user_text)
+            self.memory.add("assistant", reply)
+            return reply
+
+        website_commands = {
+            "open makaut website": "https://makaut.ac.in/",
+            "open the makaut website": "https://makaut.ac.in/",
+            "open macout website": "https://makaut.ac.in/",
+            "open the macout website": "https://makaut.ac.in/",
+            "open spotify website": "https://open.spotify.com/",
+        }
+        if lower_text in website_commands:
+            url = website_commands[lower_text]
+            opened = webbrowser.open(url)
+            reply = f"Opened {url} in your default browser." if opened else f"Couldn't confirm browser launch for {url}."
+            self.memory.add("user", user_text)
+            self.memory.add("assistant", reply)
+            return reply
+
+        if lower_text in {"open firefox and open makaut website", "open firefox and open the makaut website", "open firefox and open macout website", "open firefox and open the macout website"}:
+            try:
+                subprocess.Popen(["cmd", "/c", "start", "", "firefox"], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            except OSError:
+                pass
+            opened = webbrowser.open("https://makaut.ac.in/")
+            reply = "Requested Firefox launch and opened the MAKAUT website in the default browser." if opened else "Firefox launch requested, but browser navigation could not be confirmed."
+            self.memory.add("user", user_text)
+            self.memory.add("assistant", reply)
+            return reply
 
         # Check if user instructed JARVIS to create a new skill
         if is_skill_creation_intent(user_text):
