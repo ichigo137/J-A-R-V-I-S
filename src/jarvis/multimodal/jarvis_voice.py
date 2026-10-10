@@ -653,7 +653,16 @@ class JarvisVoiceAssistant:
                     from .browser_agent import BrowserAgent
                     self._browser_agent = BrowserAgent()
                 if browser_download_intent:
-                    reply = self._browser_agent.download_first_visible_image()
+                    ordinal_match = re.search(
+                        r"\b(\d+|first|second|third|fourth|fifth|last)\b.*\b(image|photo|picture)\b|\b(image|photo|picture)\b.*\b(\d+|first|second|third|fourth|fifth|last)\b",
+                        normalized,
+                    )
+                    ordinal_words = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5}
+                    ordinal = 1
+                    if ordinal_match:
+                        token = ordinal_match.group(1) or ordinal_match.group(4) or ""
+                        ordinal = int(token) if token.isdigit() else (ordinal_words.get(token, -1) if token == "last" else ordinal_words.get(token, 1))
+                    reply = self._browser_agent.download_visible_image(ordinal)
                 elif browser_images_intent:
                     reply = self._browser_agent.click_images_tab()
                 else:
@@ -661,6 +670,45 @@ class JarvisVoiceAssistant:
                     reply = self._browser_agent.search(query)
             except Exception as exc:
                 reply = f"Browser action failed: {exc}"
+            self.memory.add("user", user_text)
+            self.memory.add("assistant", reply)
+            return reply
+
+        # General Windows folder/file-explorer intent: resolve the target dynamically.
+        if "explorer" in normalized or "file explorer" in normalized:
+            import os
+            from pathlib import Path
+            target = None
+            folder_match = re.search(r"(?:open|show|go to|navigate to)\s+(.+?)\s+(?:in|using)\s+(?:(?:my|windows) )?file explorer$", normalized)
+            if folder_match:
+                requested = folder_match.group(1).strip().strip("\\\"'")
+                known_folders = {
+                    "downloads": Path.home() / "Downloads",
+                    "documents": Path.home() / "Documents",
+                    "desktop": Path.home() / "Desktop",
+                    "pictures": Path.home() / "Pictures",
+                    "music": Path.home() / "Music",
+                    "videos": Path.home() / "Videos",
+                    "home": Path.home(),
+                    "this pc": None,
+                }
+                target = known_folders.get(requested.lower())
+                if target is None and requested.lower() not in known_folders:
+                    target = Path(os.path.expandvars(os.path.expanduser(requested)))
+                if target is not None and not target.exists():
+                    reply = f"The requested location doesn't exist: {target}"
+                else:
+                    try:
+                        subprocess.Popen(["explorer.exe", str(target)] if target else ["explorer.exe"])
+                        reply = f"Opened File Explorer{f' at {target}' if target else ''}."
+                    except OSError as exc:
+                        reply = f"Could not open File Explorer: {exc}"
+            else:
+                try:
+                    subprocess.Popen(["explorer.exe"])
+                    reply = "Opened Windows File Explorer."
+                except OSError as exc:
+                    reply = f"Could not open File Explorer: {exc}"
             self.memory.add("user", user_text)
             self.memory.add("assistant", reply)
             return reply
@@ -913,6 +961,15 @@ class JarvisVoiceAssistant:
             self._speak("Shutting down. Goodbye, sir.")
         finally:
             self._running = False
+            # Playwright owns a Node driver process; close it before the voice worker exits
+            # so its event pipe cannot be left writing to a closed Python process.
+            if self._browser_agent is not None:
+                try:
+                    self._browser_agent.close()
+                except Exception as exc:
+                    self._log(f"  Browser cleanup warning: {exc}")
+                finally:
+                    self._browser_agent = None
             self.speaker.stop_playback()
             self._log("  JARVIS offline.")
 

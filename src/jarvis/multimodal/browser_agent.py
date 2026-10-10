@@ -102,12 +102,12 @@ class BrowserAgent:
             return f"Opened image results for {query}. Current page: {page.url}"
         return "I couldn't identify a search query from the current page, so I didn't change it."
 
-    def download_first_visible_image(self) -> str:
-        """Download the first visible, non-trivial image from the current page."""
+    def download_visible_image(self, ordinal: int = 1) -> str:
+        """Download a requested visible image by its rendered order (1-based)."""
         page = self._ensure_browser()
         images = page.locator("img")
-        count = images.count()
-        for index in range(count):
+        candidates = []
+        for index in range(images.count()):
             image = images.nth(index)
             try:
                 if not image.is_visible():
@@ -118,35 +118,49 @@ class BrowserAgent:
                 src = image.get_attribute("src") or image.get_attribute("data-src")
                 if not src or src.startswith("data:image/svg"):
                     continue
-                # Prefer the browser's download event when the page offers a download link;
-                # otherwise save the rendered image bytes from the current page.
-                result = image.evaluate("""async (img) => {
-                    const src = img.currentSrc || img.src;
-                    const response = await fetch(src, {credentials: 'include'});
-                    if (!response.ok) throw new Error('Image fetch returned ' + response.status);
-                    const blob = await response.blob();
-                    return {name: (src.split('/').pop().split('?')[0] || 'page-image').slice(0,100),
-                            type: blob.type || 'image/jpeg',
-                            data: Array.from(new Uint8Array(await blob.arrayBuffer()))};
-                }""")
-                import base64
-                safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", result["name"]) or "page-image"
-                if "." not in safe_name:
-                    safe_name += ".jpg"
-                target = self.download_dir / safe_name
-                if target.exists():
-                    target = self.download_dir / f"{target.stem}_{index}{target.suffix}"
-                target.write_bytes(bytes(result["data"]))
-                return f"Downloaded the first visible image from the current page to {target}."
+                candidates.append((index, image))
             except Exception:
                 continue
-        return "I couldn't find a downloadable visible image on the current page. I haven't downloaded anything."
+        if ordinal < 1 or ordinal > len(candidates):
+            return f"Found {len(candidates)} downloadable visible images; image {ordinal} is unavailable, so nothing was downloaded."
+        index, image = candidates[ordinal - 1]
+        try:
+            result = image.evaluate("""async (img) => {
+                const src = img.currentSrc || img.src;
+                const response = await fetch(src, {credentials: 'include'});
+                if (!response.ok) throw new Error('Image fetch returned ' + response.status);
+                const blob = await response.blob();
+                return {name: (src.split('/').pop().split('?')[0] || 'page-image').slice(0,100),
+                        type: blob.type || 'image/jpeg',
+                        data: Array.from(new Uint8Array(await blob.arrayBuffer()))};
+            }""")
+            safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", result["name"]) or "page-image"
+            if "." not in safe_name:
+                safe_name += ".jpg"
+            target = self.download_dir / safe_name
+            if target.exists():
+                target = self.download_dir / f"{target.stem}_{index}{target.suffix}"
+            target.write_bytes(bytes(result["data"]))
+            if target.stat().st_size == 0:
+                target.unlink(missing_ok=True)
+                return "The selected image returned an empty file; nothing was saved."
+            return f"Downloaded image {ordinal} from the current page to {target}."
+        except Exception as exc:
+            return f"Could not download image {ordinal}: {exc}"
 
     def close(self) -> None:
-        if self._context is not None:
-            self._context.close()
-            self._context = None
-            self._page = None
-        if self._playwright is not None:
-            self._playwright.stop()
-            self._playwright = None
+        # Always attempt to stop the Node driver, even if Firefox/context shutdown
+        # races with an already-closing window and raises a transport error.
+        context, self._context = self._context, None
+        playwright, self._playwright = self._playwright, None
+        self._page = None
+        if context is not None:
+            try:
+                context.close()
+            except Exception:
+                pass
+        if playwright is not None:
+            try:
+                playwright.stop()
+            except Exception:
+                pass
