@@ -34,6 +34,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import wave
 from dataclasses import dataclass, field
@@ -99,16 +100,34 @@ def _stt_command_runner(command: str) -> Callable[[bytes, str, str | None], dict
 
 
 def _faster_whisper_runner(model_name: str) -> Callable[[bytes, str, str | None], dict[str, Any]]:
-    """In-process faster-whisper inference (real; the model downloads on first use)."""
+    """In-process faster-whisper inference with one lazy, reusable model instance."""
+
+    model_holder: dict[str, Any] = {}
+    model_lock = threading.Lock()
 
     def run(audio_bytes: bytes, audio_format: str, language: str | None) -> dict[str, Any]:
         from faster_whisper import WhisperModel
 
+        if "model" not in model_holder:
+            with model_lock:
+                if "model" not in model_holder:
+                    model_holder["model"] = WhisperModel(
+                        model_name, device="cpu", compute_type="int8"
+                    )
+
         with tempfile.TemporaryDirectory() as tmp:
             source = Path(tmp) / f"turn.{audio_format or 'wav'}"
             source.write_bytes(audio_bytes)
-            model = WhisperModel(model_name, device="cpu", compute_type="int8")
-            segments, info = model.transcribe(str(source), language=language)
+            segments, info = model_holder["model"].transcribe(
+                str(source),
+                language=language or "en",
+                beam_size=5,
+                best_of=5,
+                temperature=0.0,
+                condition_on_previous_text=False,
+                vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 300},
+            )
             text = " ".join(segment.text.strip() for segment in segments).strip()
             return {
                 "text": text,

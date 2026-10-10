@@ -624,10 +624,16 @@ class LiveRuntime:
         utterance: str,
         *,
         audio: Path | str | None = None,
+        microphone: bool = False,
         answerer: Callable[[str], Any] | None = None,
     ) -> VoiceTurnReport:
-        """One spoken turn - the turn itself is owned by `jarvis.live_voice`."""
-        return self._voice.run(utterance, audio=audio, answerer=answerer)
+        """One spoken turn owned by the live voice module."""
+        return self._voice.run(
+            utterance,
+            audio=audio,
+            microphone=microphone,
+            answerer=answerer,
+        )
 
     # -- honest status lines, per component --------------------------------
 

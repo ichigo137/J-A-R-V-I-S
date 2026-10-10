@@ -13,6 +13,7 @@ Tie-break is `(-score, event_id)` so ranking is total and clock-independent.
 """
 
 import re
+from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
@@ -95,6 +96,30 @@ def _extract(content: str) -> str:
 
 
 def answer(projection: MemoryProjection, query: str) -> AnswerResult:
+    """Answer deterministic system facts before falling back to memory recall."""
+    normalized = " ".join(query.lower().split())
+    if any(
+        phrase in normalized
+        for phrase in ("what time", "current time", "time right now", "time now")
+    ):
+        return AnswerResult(
+            answered=True,
+            answer=f"The current time is {datetime.now().astimezone().strftime('%I:%M %p')}.",
+            confidence=1.0,
+            source="deterministic system clock",
+            memory_event_id=None,
+        )
+    if any(
+        phrase in normalized
+        for phrase in ("what date", "todays date", "what day today", "what day")
+    ):
+        return AnswerResult(
+            answered=True,
+            answer=f"Today is {datetime.now().astimezone().strftime('%A, %B %d, %Y')}.",
+            confidence=1.0,
+            source="deterministic system clock",
+            memory_event_id=None,
+        )
     hits = recall(projection, query, limit=1)
     if not hits:
         return AnswerResult(

@@ -26,6 +26,16 @@ dev = [
 [project.scripts]
 jarvis = "jarvis.cli:main"
 
+[project.optional-dependencies]
+audio = [
+    "pyaudio>=0.2.14",
+]
+voice = [
+    "faster-whisper>=1.1,<2",
+    # faster-whisper 1.2.1 still calls a PyAV API removed in PyAV 19.
+    "av>=11,<19",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

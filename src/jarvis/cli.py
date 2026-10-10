@@ -23,7 +23,11 @@ Deviations from the §127.1 transcript are disclosed:
 import argparse
 import asyncio
 import hashlib
+import httpx
+import json
 import os
+import shutil
+import subprocess
 import re
 import sys
 from pathlib import Path
@@ -108,11 +112,21 @@ def _build_parser() -> argparse.ArgumentParser:
         "voice",
         help="answer one voice turn through the live loop (STT -> answer -> TTS, FSM journalled)",
     )
-    voice.add_argument("utterance", help="the spoken text, or the utterance to transcribe")
+    voice.add_argument(
+        "utterance",
+        nargs="?",
+        default="",
+        help="spoken text; omit with --microphone to capture from the default microphone",
+    )
     voice.add_argument(
         "--audio",
         default=None,
         help="audio file to transcribe for real (requires a bound STT engine)",
+    )
+    voice.add_argument(
+        "--microphone",
+        action="store_true",
+        help="capture one utterance from the default physical microphone using real VAD",
     )
     voice.set_defaults(func=_cmd_voice)
 
@@ -456,14 +470,74 @@ def _cmd_status(service: CoreService, args: argparse.Namespace) -> int:
 # model-backed question path (STRETCH M1.1, module 15)
 # ---------------------------------------------------------------------------
 
-# Current Groq chat model as of M1.1 (the module-6 adapter default,
-# llama-3.3-70b-versatile, is decommissioned). Overridable per machine via
-# JARVIS_MODEL_NAME; recorded as provenance on question.asked.
+# Cloud remains optional. Local OpenAI-compatible runtimes are preferred when
+# reachable, so a JARVIS install does not require an API key.
 DEFAULT_MODEL_NAME = "openai/gpt-oss-120b"
+LOCAL_MODEL_URLS = (
+    "http://127.0.0.1:1234/v1",  # LM Studio
+    "http://127.0.0.1:11434/v1",  # Ollama OpenAI compatibility
+)
 
 
 def _model_name() -> str:
     return os.environ.get("JARVIS_MODEL_NAME") or DEFAULT_MODEL_NAME
+
+
+def _ensure_local_model_loaded() -> None:
+    """Load the smallest installed LM Studio model that fits this machine."""
+    if os.environ.get("JARVIS_LOCAL_MODEL_AUTOLOAD", "1").lower() in {"0", "false", "no"}:
+        return
+    lms = shutil.which("lms") or str(Path.home() / ".lmstudio" / "bin" / "lms.exe")
+    if not Path(lms).exists() and not shutil.which("lms"):
+        return
+    try:
+        ps = subprocess.run([lms, "ps", "--json"], capture_output=True, text=True, timeout=3)
+        loaded = json.loads(ps.stdout or "[]")
+        if loaded:
+            return
+        listing = subprocess.run([lms, "ls", "--json"], capture_output=True, text=True, timeout=5)
+        models = [item for item in json.loads(listing.stdout or "[]") if item.get("type") == "llm"]
+        if not models:
+            return
+        import psutil
+        budget = int(psutil.virtual_memory().total * 0.35)
+        requested = os.environ.get("JARVIS_LOCAL_MODEL_KEY", "").strip()
+        if requested:
+            candidates = [m for m in models if m.get("modelKey") == requested]
+        else:
+            candidates = [m for m in models if int(m.get("sizeBytes", 0)) <= budget]
+            candidates.sort(key=lambda m: int(m.get("sizeBytes", 0)))
+        if not candidates:
+            return
+        key = str(candidates[0]["modelKey"])
+        # LM Studio chooses CPU/GPU placement from the machine's resources.
+        subprocess.run([lms, "load", key, "--yes"], capture_output=True, text=True, timeout=180)
+    except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+        return
+
+
+def _local_model_backend() -> tuple[str, str] | None:
+    """Find a local OpenAI-compatible model, auto-loading one when possible."""
+    configured = os.environ.get("JARVIS_LOCAL_MODEL_BASE_URL", "").strip()
+    urls = (configured,) if configured else LOCAL_MODEL_URLS
+    _ensure_local_model_loaded()
+    for base_url in urls:
+        if not base_url:
+            continue
+        try:
+            response = httpx.get(f"{base_url.rstrip('/')}/models", timeout=0.8)
+            if response.status_code >= 400:
+                continue
+            data = response.json()
+            models = data.get("data", []) if isinstance(data, dict) else []
+            if not models:
+                continue
+            model_id = str(models[0].get("id", "")).strip()
+            if model_id:
+                return base_url.rstrip("/"), model_id
+        except (httpx.HTTPError, ValueError, TypeError, KeyError):
+            continue
+    return None
 
 
 def _build_model_gateway(service: CoreService):
@@ -477,11 +551,6 @@ def _build_model_gateway(service: CoreService):
     — the in-memory registry gains no new provider, so the §127.1 registry
     invariant holds), and wires `ModelGateway` on the service registry.
     """
-    if not (
-        os.environ.get("JARVIS_MODEL_API_KEY")
-        and os.environ.get("JARVIS_MODEL_BASE_URL")
-    ):
-        return None
     registry = service.registry
     if registry is None:
         return None
@@ -489,6 +558,24 @@ def _build_model_gateway(service: CoreService):
         from .kernel.model_gateway import ModelGateway
         from .kernel.model_gateway import register_groq_provider
         from .providers.openai_compatible import OpenAICompatibleAdapter
+
+        local = _local_model_backend()
+        if local is not None:
+            base_url, model = local
+            register_groq_provider(registry)
+            adapter = OpenAICompatibleAdapter(
+                model=os.environ.get("JARVIS_MODEL_NAME") or model,
+                base_url=base_url,
+                api_key="",
+                allow_anonymous=True,
+            )
+            return ModelGateway(resolver=registry, adapters={"model.adapter": adapter})
+
+        if not (
+            os.environ.get("JARVIS_MODEL_API_KEY")
+            and os.environ.get("JARVIS_MODEL_BASE_URL")
+        ):
+            return None
 
         register_groq_provider(registry)
         adapter = OpenAICompatibleAdapter(model=_model_name())
@@ -680,6 +767,7 @@ def _cmd_voice(service: CoreService, args: argparse.Namespace) -> int:
     report = runtime.voice_turn(
         args.utterance,
         audio=args.audio,
+        microphone=args.microphone,
         answerer=lambda text: _answer_question(service, text),
     )
     for line in report.lines:

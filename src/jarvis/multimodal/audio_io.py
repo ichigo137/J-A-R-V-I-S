@@ -39,7 +39,7 @@ DEFAULT_SAMPLE_RATE = 16000       # Whisper's native rate
 DEFAULT_FRAME_DURATION_MS = 30    # 30ms frames (standard for VAD)
 DEFAULT_CHANNELS = 1              # Mono
 DEFAULT_SAMPLE_WIDTH = 2          # 16-bit PCM
-DEFAULT_RMS_THRESHOLD = 0.015     # Normalized RMS speech threshold
+DEFAULT_RMS_THRESHOLD = 0.03      # Normalized RMS speech threshold for real Windows mics
 DEFAULT_SILENCE_FRAMES = 15       # ~450ms of silence to end utterance
 DEFAULT_SPEECH_FRAMES = 3         # ~90ms of speech to start recording
 
@@ -170,6 +170,8 @@ class RealMicrophone:
         self._rms_threshold = rms_threshold
         self._device_index = device_index
         self._frame_size = int(sample_rate * frame_duration_ms / 1000)
+        self._stream_frame_size = self._frame_size
+        self._input_sample_rate = sample_rate
         self._chunk_bytes = self._frame_size * DEFAULT_SAMPLE_WIDTH * channels
 
         self._active = False
@@ -205,11 +207,40 @@ class RealMicrophone:
         sum_squares = fsum(float(s) * s for s in samples)
         return sqrt(sum_squares / count) / 32768.0
 
+    @staticmethod
+    def _resample_mono_pcm16(data: bytes, source_rate: int, target_rate: int) -> bytes:
+        """Resample mono 16-bit PCM with linear interpolation."""
+        if source_rate == target_rate:
+            return data
+        samples = array("h")
+        samples.frombytes(data[: len(data) - (len(data) % 2)])
+        if sys.byteorder == "big":
+            samples.byteswap()
+        if not samples:
+            return b""
+        target_count = max(1, round(len(samples) * target_rate / source_rate))
+        if target_count == 1:
+            return array("h", [samples[0]]).tobytes()
+        scale = (len(samples) - 1) / (target_count - 1)
+        output = array("h")
+        for index in range(target_count):
+            position = index * scale
+            left = int(position)
+            right = min(left + 1, len(samples) - 1)
+            fraction = position - left
+            value = samples[left] + (samples[right] - samples[left]) * fraction
+            output.append(max(-32768, min(32767, round(value))))
+        return output.tobytes()
+
     def _capture_loop(self) -> None:
         """Background thread: reads frames from PyAudio and queues them."""
         while self._active and self._stream is not None:
             try:
-                data = self._stream.read(self._frame_size, exception_on_overflow=False)
+                data = self._stream.read(self._stream_frame_size, exception_on_overflow=False)
+                if self._input_sample_rate != self._sample_rate:
+                    data = self._resample_mono_pcm16(
+                        data, self._input_sample_rate, self._sample_rate
+                    )
                 rms = self._compute_rms(data)
                 frame = AudioFrame(
                     data=data,
@@ -242,7 +273,23 @@ class RealMicrophone:
         if self._device_index is not None:
             kwargs["input_device_index"] = self._device_index
 
-        self._stream = self._pa.open(**kwargs)
+        try:
+            self._stream = self._pa.open(**kwargs)
+            self._input_sample_rate = self._sample_rate
+        except OSError as exc:
+            # Windows WASAPI endpoints often expose only their native rate
+            # (48 kHz on this machine). Capture at that rate, then downsample
+            # each frame to the 16 kHz PCM contract consumed by Whisper.
+            if self._device_index is None:
+                raise
+            info = self._pa.get_device_info_by_index(self._device_index)
+            native_rate = int(float(info.get("defaultSampleRate", 0.0)))
+            if native_rate <= 0 or native_rate == self._sample_rate:
+                raise exc
+            kwargs["rate"] = native_rate
+            self._input_sample_rate = native_rate
+            self._stream_frame_size = int(native_rate * self._frame_duration_ms / 1000)
+            self._stream = self._pa.open(**kwargs)
         self._active = True
         self._frame_index = 0
         self._thread = threading.Thread(target=self._capture_loop, daemon=True, name="jarvis-mic")
@@ -441,7 +488,15 @@ def list_audio_devices() -> list[AudioDeviceInfo]:
 
 
 def find_default_input_device() -> int | None:
-    """Find the index of the default input (microphone) device."""
+    """Find a usable default microphone endpoint.
+
+    Windows can expose the same physical microphone through several PortAudio
+    host APIs. On some machines the MME endpoint is reported as the Windows
+    default but delivers effectively silent frames, while the matching
+    DirectSound endpoint carries the real microphone signal. Prefer a
+    non-MME endpoint for the same default microphone, then fall back to the
+    Windows default if no alternate endpoint exists.
+    """
     try:
         import pyaudio
     except ImportError:
@@ -449,8 +504,38 @@ def find_default_input_device() -> int | None:
 
     pa = pyaudio.PyAudio()
     try:
-        info = pa.get_default_input_device_info()
-        return int(info["index"])
+        default = pa.get_default_input_device_info()
+        default_index = int(default["index"])
+        default_name = str(default.get("name", ""))
+        # PortAudio's MME device names may be truncated. A short prefix is
+        # enough to correlate the physical microphone across host APIs.
+        identity = default_name[:24].casefold()
+        candidates: list[tuple[int, int]] = []
+        # WASAPI is preferred on Windows because it preserves the native
+        # endpoint path and avoids the aggressive clipping/gain observed on
+        # this machine's DirectSound endpoint. Fall back through WDM-KS,
+        # DirectSound, then MME.
+        host_priority = {2: 0, 3: 1, 1: 2, 0: 3}  # WASAPI, WDM-KS, DirectSound, MME
+        for index in range(pa.get_device_count()):
+            try:
+                info = pa.get_device_info_by_index(index)
+                if int(info.get("maxInputChannels", 0)) <= 0:
+                    continue
+                name = str(info.get("name", ""))
+                if identity and not name[:24].casefold() == identity:
+                    continue
+                host_api = int(info.get("hostApi", 0))
+                if index == default_index:
+                    rank = host_priority.get(host_api, 4)
+                else:
+                    rank = host_priority.get(host_api, 4)
+                candidates.append((rank, index))
+            except Exception:
+                continue
+        if candidates:
+            candidates.sort()
+            return candidates[0][1]
+        return default_index
     except Exception:
         return None
     finally:

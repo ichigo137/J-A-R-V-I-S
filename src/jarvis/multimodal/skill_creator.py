@@ -72,6 +72,12 @@ def generate_skill_content(skill_name: str, topic: str, instructions: str = "") 
         clean_topic = skill_name.replace("-", " ").title()
 
     skill_desc = f"Comprehensive workflow and guidance for {clean_topic}."
+    default_instructions = (
+        f"1. Analyze the user's specific requirements for {clean_topic}.\n"
+        "2. Validate required environment prerequisites.\n"
+        "3. Execute the corresponding operations deterministically.\n"
+        "4. Verify outcome and report completion back to the user."
+    )
     
     return f"""---
 name: {skill_name}
@@ -91,7 +97,7 @@ Activate this skill whenever the user asks to:
 - Execute tasks within this domain
 
 ## Core Workflows
-{instructions if instructions.strip() else f"1. Analyze the user's specific requirements for {clean_topic}.\\n2. Validate required environment prerequisites.\\n3. Execute the corresponding operations deterministically.\\n4. Verify outcome and report completion back to the user."}
+{instructions if instructions.strip() else default_instructions}
 
 ## Best Practices
 - Always verify preconditions before initiating actions.

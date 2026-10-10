@@ -47,16 +47,21 @@ class OpenAICompatibleAdapter:
         model: str = "llama-3.3-70b-versatile",
         timeout_seconds: float = 60.0,
         transport: httpx.BaseTransport | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        allow_anonymous: bool = False,
     ) -> None:
-        api_key = os.environ.get("JARVIS_MODEL_API_KEY")
-        base_url = os.environ.get("JARVIS_MODEL_BASE_URL")
+        # Explicit values allow local OpenAI-compatible runtimes to operate
+        # without credentials. Environment variables remain the legacy default.
+        api_key = os.environ.get("JARVIS_MODEL_API_KEY") if api_key is None else api_key
+        base_url = os.environ.get("JARVIS_MODEL_BASE_URL") if base_url is None else base_url
         missing = [
             name
             for name, value in (
                 ("JARVIS_MODEL_API_KEY", api_key),
                 ("JARVIS_MODEL_BASE_URL", base_url),
             )
-            if not value
+            if not value and not (allow_anonymous and name == "JARVIS_MODEL_API_KEY")
         ]
         if missing:
             raise ProviderTransportError(
@@ -69,6 +74,7 @@ class OpenAICompatibleAdapter:
         self._model = model
         self._timeout = timeout_seconds
         self._transport = transport
+        self._allow_anonymous = allow_anonymous
 
     # ---- ProviderAdapter Protocol ----------------------------------------
 
@@ -103,12 +109,20 @@ class OpenAICompatibleAdapter:
                 {"role": "user", "content": user_content},
             ],
             "temperature": 0.0,
-            "response_format": {"type": "json_object"},
         }
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
+        # Some local runtimes/models do not implement OpenAI's structured-output
+        # transport flag. The kernel still validates the returned JSON against
+        # its schema, so omitting the transport hint does not weaken validation.
+        if self._allow_anonymous:
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {"name": schema_id, "schema": schema_json},
+            }
+        else:
+            payload["response_format"] = {"type": "json_object"}
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
         url = self._url("/chat/completions").rstrip("/")
 
         client = self._async_client()
@@ -146,8 +160,9 @@ class OpenAICompatibleAdapter:
     ) -> dict[str, Any]:
         resp = await client.post(url, json=payload, headers=headers)
         if resp.status_code >= 400:
+            detail = resp.text.strip().replace("\n", " ")[:500]
             raise ProviderTransportError(
-                f"model provider returned HTTP {resp.status_code}"
+                f"model provider returned HTTP {resp.status_code}: {detail}"
             )
         try:
             data = resp.json()
@@ -162,12 +177,16 @@ class OpenAICompatibleAdapter:
                 "model provider response missing choices[0].message.content"
             ) from exc
         if isinstance(content, str):
+            candidate = content.strip()
+            if candidate.startswith("```"):
+                candidate = candidate.split("\n", 1)[1] if "\n" in candidate else candidate
+                candidate = candidate.rsplit("```", 1)[0].strip()
             try:
-                return json.loads(content)
+                return json.loads(candidate)
             except ValueError as exc:
+                detail = candidate[:500]
                 raise ProviderTransportError(
-                    "model returned non-JSON content despite "
-                    "response_format=json_object"
+                    f"model returned non-JSON content: {detail!r}"
                 ) from exc
         if isinstance(content, dict):
             return content

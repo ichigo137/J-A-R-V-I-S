@@ -23,6 +23,9 @@ than spoken.
 """
 
 import asyncio
+import time
+import wave
+from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
@@ -49,6 +52,12 @@ from .live_report import (
     vad_real_line,
     voice_answer_path,
     voice_loop_line,
+)
+from .multimodal.audio_io import (
+    DEFAULT_SPEECH_FRAMES,
+    RealMicrophone,
+    RealSpeaker,
+    find_default_input_device,
 )
 from .multimodal.streaming import StreamingVoiceLoop
 
@@ -83,17 +92,95 @@ class VoiceTurn:
         self._offline_answer = offline_answer
         self._components = components
 
+    def _capture_microphone(self, lines: list[str]) -> Path | None:
+        """Capture one bounded utterance from the physical default microphone."""
+        device = find_default_input_device()
+        if device is None:
+            lines.append("microphone: FAILED - no default input device is available")
+            return None
+        mic = RealMicrophone(device_index=device)
+        # Keep a short pre-roll so the first consonants/syllables are not lost
+        # while VAD decides that the user has started speaking.
+        pre_roll: deque[bytes] = deque(maxlen=12)  # ~360 ms at 30 ms/frame
+        captured: list[bytes] = []
+        saw_speech = False
+        speech_frames = 0
+        consecutive_speech = 0
+        silence_frames = 0
+        consumed_frames = 0
+        max_capture_frames = int(12.0 * 1000 / VAD_FRAME_MS)
+        deadline = time.monotonic() + 12.0
+        try:
+            mic.start()
+            lines.append(f"microphone: REAL capture started (device {device})")
+            while time.monotonic() < deadline:
+                frame = mic.read_frame()
+                if frame is None:
+                    time.sleep(0.01)
+                    continue
+                consumed_frames += 1
+                if consumed_frames > max_capture_frames:
+                    break
+                if not saw_speech:
+                    pre_roll.append(frame.data)
+                if frame.is_speech:
+                    consecutive_speech += 1
+                    if not saw_speech and consecutive_speech >= DEFAULT_SPEECH_FRAMES:
+                        captured.extend(pre_roll)
+                        pre_roll.clear()
+                        saw_speech = True
+                    if saw_speech:
+                        captured.append(frame.data)
+                    speech_frames += 1
+                    silence_frames = 0
+                elif saw_speech:
+                    consecutive_speech = 0
+                    captured.append(frame.data)
+                    silence_frames += 1
+                    # ~750 ms of trailing silence gives short utterances and
+                    # Whisper a little more room than the old ~450 ms cutoff.
+                    if silence_frames >= 25:
+                        break
+                else:
+                    consecutive_speech = 0
+        except Exception as exc:
+            lines.append(f"microphone: FAILED - {type(exc).__name__}: {exc}")
+            return None
+        finally:
+            mic.stop()
+        if not saw_speech or not captured:
+            lines.append("microphone: no speech captured before the 12s timeout")
+            return None
+        target_dir = self._home / AUDIO_DIRNAME
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / f"mic-{new_ulid()}.wav"
+        with wave.open(str(target), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(b"".join(captured))
+        lines.append(f"microphone: captured {len(captured)} frames to {target}")
+        return target
+
     def run(
         self,
         utterance: str,
         *,
         audio: Path | str | None = None,
+        microphone: bool = False,
         answerer: Callable[[str], Any] | None = None,
     ) -> VoiceTurnReport:
         lines: list[str] = []
         transcript = (utterance or "").strip()
         source = "typed utterance"
         frames: list[tuple[bytes, bool]] | None = None
+
+        if microphone and audio is not None:
+            lines.append("microphone: ignored because --audio was supplied")
+        if microphone and audio is None and not transcript:
+            audio = self._capture_microphone(lines)
+            if audio is None:
+                source = "physical microphone (no speech captured)"
 
         if audio is not None:
             path = Path(audio)
@@ -106,16 +193,25 @@ class VoiceTurn:
             if self._stt is None:
                 lines.append(stt_seam_line(self._stt_engine, path.name))
             else:
-                spoken = asyncio.run(
-                    self._stt.invoke(
-                        "audio.transcribe",
-                        "1.0.0",
-                        {"audio_path": str(path), "format": path.suffix.lstrip(".") or "wav"},
+                try:
+                    spoken = asyncio.run(
+                        self._stt.invoke(
+                            "audio.transcribe",
+                            "1.0.0",
+                            {"audio_path": str(path), "format": path.suffix.lstrip(".") or "wav"},
+                        )
                     )
-                )
-                transcript = spoken["text"]
-                source = f"transcribed from {path.name} by {spoken.get('engine', 'engine')}"
-                lines.append(stt_transcribed_line(self._stt_engine, transcript))
+                except Exception as exc:
+                    lines.append(
+                        f"stt: {self._stt_engine} FAILED - {type(exc).__name__}: {exc}; "
+                        "no transcript was fabricated"
+                    )
+                    transcript = ""
+                    source = f"STT failure for {path.name}"
+                else:
+                    transcript = str(spoken.get("text", "")).strip()
+                    source = f"transcribed from {path.name} by {spoken.get('engine', 'engine')}"
+                    lines.append(stt_transcribed_line(self._stt_engine, transcript))
         else:
             lines.append(stt_typed_line(self._stt_engine))
 
@@ -143,6 +239,28 @@ class VoiceTurn:
             vad = vad_declared_line()
         for _ in range(loop.silence_threshold_frames):
             loop.feed_audio_frame(b"", vad_active=False)
+
+        if not transcript:
+            lines.append("answer: skipped - no transcript available")
+            return VoiceTurnReport(
+                utterance="",
+                transcript_source=source,
+                stt=self._stt_engine,
+                answered=False,
+                answer="",
+                confidence=0.0,
+                used_model=False,
+                tts=self._tts_engine,
+                audio_out=None,
+                states=tuple(states),
+                lines=tuple(lines),
+                components=tuple(),
+                vad=vad,
+                audio_seconds=0.0,
+                audio_sample_rate=0,
+                audio_peak=0.0,
+                audio_non_silent=False,
+            )
 
         result = (
             answerer(transcript) if answerer is not None else self._offline_answer(transcript)
@@ -194,6 +312,18 @@ class VoiceTurn:
                 lines.append(
                     tts_wrote_line(self._tts_engine, str(target), facts, len(payload))
                 )
+                if microphone:
+                    # Physical microphone turns are interactive: play the verified
+                    # synthesis through the real default output device.
+                    try:
+                        speaker = RealSpeaker()
+                        speaker.play_wav(payload, blocking=True)
+                        lines.append("speaker: REAL default output playback completed")
+                    except Exception as exc:
+                        lines.append(
+                            f"speaker: FAILED - {type(exc).__name__}: {exc}; "
+                            "the synthesized WAV was still written and measured"
+                        )
         loop.finish_assistant_speaking()
 
         lines.append(voice_loop_line(states))
