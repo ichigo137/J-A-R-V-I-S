@@ -243,6 +243,26 @@ class STTEngine:
         self.model = model
         self.use_google = use_google
         self._recognizer: Any = None
+        self._whisper_model: Any = None
+
+    def _transcribe_local_whisper(self, audio: Any) -> str:
+        """Transcribe SpeechRecognition AudioData with the installed faster-whisper backend."""
+        import numpy as np
+        from faster_whisper import WhisperModel
+
+        if self._whisper_model is None:
+            # CPU/int8 keeps the default path usable without a dedicated GPU.
+            self._whisper_model = WhisperModel(self.model, device="cpu", compute_type="int8")
+        pcm = audio.get_raw_data(convert_rate=16000, convert_width=2)
+        samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32) / 32768.0
+        segments, _info = self._whisper_model.transcribe(samples, beam_size=5, vad_filter=True)
+        return " ".join(segment.text.strip() for segment in segments).strip()
+
+    def transcribe_audio(self, audio: Any) -> str:
+        """Transcribe one captured utterance using local faster-whisper or Google STT."""
+        if self.use_google:
+            return str(self._get_recognizer().recognize_google(audio)).strip()
+        return self._transcribe_local_whisper(audio)
 
     def _get_recognizer(self) -> Any:
         if self._recognizer is None:
@@ -271,12 +291,7 @@ class STTEngine:
         recognizer = self._get_recognizer()
         try:
             audio = sr.AudioData(wav_bytes, DEFAULT_SAMPLE_RATE, 2)  # 16-bit = 2 bytes
-            if self.use_google:
-                text = recognizer.recognize_google(audio)
-            else:
-                # Use Whisper (local, offline)
-                text = recognizer.recognize_whisper(audio, model=self.model)
-            return str(text).strip()
+            return self.transcribe_audio(audio)
         except Exception:
             return ""
 
@@ -296,11 +311,7 @@ class STTEngine:
                 except Exception:
                     return ""
 
-            if self.use_google:
-                text = recognizer.recognize_google(audio)
-            else:
-                text = recognizer.recognize_whisper(audio, model=self.model)
-            return str(text).strip()
+            return self.transcribe_audio(audio)
         except Exception:
             return ""
 
@@ -665,13 +676,7 @@ class JarvisVoiceAssistant:
 
                         # STT: Convert speech to text
                         try:
-                            if self.stt.use_google:
-                                transcript = recognizer.recognize_google(audio)
-                            else:
-                                transcript = recognizer.recognize_whisper(
-                                    audio, model=self.stt.model
-                                )
-                            transcript = str(transcript).strip()
+                            transcript = self.stt.transcribe_audio(audio)
                         except sr.UnknownValueError:
                             self._log("  ❓ Couldn't understand. Try again.")
                             continue
