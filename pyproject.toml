@@ -31,6 +31,9 @@ jarvis-voice-window = "jarvis.multimodal.voice_window:main"
 audio = [
     "pyaudio>=0.2.14",
 ]
+browser = [
+    "playwright>=1.50,<2",
+]
 voice = [
     "SpeechRecognition>=3.10,<4",
     "PyAudio>=0.2.14",

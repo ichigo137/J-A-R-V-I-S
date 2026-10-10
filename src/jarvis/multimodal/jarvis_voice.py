@@ -576,6 +576,7 @@ class JarvisVoiceAssistant:
         self.verbose = verbose
         self.greeting = greeting
         self.on_event = on_event
+        self._browser_agent = None
 
         # Core engines
         self.stt = STTEngine(model=stt_model, use_google=use_google_stt)
@@ -632,6 +633,38 @@ class JarvisVoiceAssistant:
         import subprocess
         import webbrowser
 
+        # Browser tasks use a real, persistent Playwright-controlled Firefox session.
+        # The model is not allowed to fabricate completion; tool output becomes the reply.
+        normalized = re.sub(r"\s+", " ", lower_text).strip()
+        browser_download_intent = bool(re.search(
+            r"\b(download|save)\b.*\b(image|photo|picture)\b|\b(first|top)\s+(image|photo|picture)\b.*\b(download|save)\b",
+            normalized,
+        ))
+        browser_images_intent = bool(re.search(
+            r"\b(images|image results|images tab)\b", normalized
+        ) and re.search(r"\b(go to|open|switch|show|click)\b", normalized))
+        compound_search = re.fullmatch(
+            r"(?:please )?(?:(?:open|launch|start) firefox and )?(?:search for|google|look up) (.+?)(?: in firefox| on firefox| in browser)?[.! ]*",
+            normalized,
+        )
+        if browser_download_intent or browser_images_intent or compound_search:
+            try:
+                if self._browser_agent is None:
+                    from .browser_agent import BrowserAgent
+                    self._browser_agent = BrowserAgent()
+                if browser_download_intent:
+                    reply = self._browser_agent.download_first_visible_image()
+                elif browser_images_intent:
+                    reply = self._browser_agent.click_images_tab()
+                else:
+                    query = compound_search.group(1).strip()
+                    reply = self._browser_agent.search(query)
+            except Exception as exc:
+                reply = f"Browser action failed: {exc}"
+            self.memory.add("user", user_text)
+            self.memory.add("assistant", reply)
+            return reply
+
         # Explicit allow-listed desktop commands execute independently of the LLM.
         app_commands = {
             "open notepad": (["notepad.exe"], "Notepad"),
@@ -680,8 +713,7 @@ class JarvisVoiceAssistant:
             self.memory.add("assistant", reply)
             return reply
 
-        # Handle natural variations of browser/search requests before LLM chat.
-        import re
+        # Handle legacy browser/search requests before LLM chat.
         from urllib.parse import quote_plus
 
         normalized = re.sub(r"\s+", " ", lower_text).strip()
