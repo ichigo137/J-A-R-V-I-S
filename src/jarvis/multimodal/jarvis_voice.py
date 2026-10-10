@@ -680,6 +680,52 @@ class JarvisVoiceAssistant:
             self.memory.add("assistant", reply)
             return reply
 
+        # Handle natural variations of browser/search requests before LLM chat.
+        import re
+        from urllib.parse import quote_plus
+
+        normalized = re.sub(r"\s+", " ", lower_text).strip()
+        search_match = re.fullmatch(
+            r"(?:please )?(?:search for|google|look up) (.+?)(?: in firefox| on firefox| in browser)?",
+            normalized,
+        )
+        if search_match:
+            query = search_match.group(1).strip()
+            # Don't reinterpret app/site opening commands as web searches.
+            if query and not query.startswith(("firefox", "notepad", "spotify")):
+                url = "https://www.google.com/search?q=" + quote_plus(query)
+                try:
+                    subprocess.Popen(
+                        ["cmd", "/c", "start", "", "firefox", url],
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    )
+                    reply = f"Searching Firefox for {query}."
+                except OSError:
+                    opened = webbrowser.open(url)
+                    reply = f"Firefox could not be launched; opened the search in your default browser." if opened else "I couldn't open a browser for that search."
+                self.memory.add("user", user_text)
+                self.memory.add("assistant", reply)
+                return reply
+
+        site_match = re.fullmatch(
+            r"(?:please )?(?:open|go to|navigate to) (?:the )?(?:makaut|macout)(?: website| site)?(?: in firefox)?",
+            normalized,
+        )
+        if site_match:
+            url = "https://makaut.ac.in/"
+            try:
+                subprocess.Popen(
+                    ["cmd", "/c", "start", "", "firefox", url],
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                reply = "Opening the MAKAUT website in Firefox."
+            except OSError:
+                opened = webbrowser.open(url)
+                reply = "Firefox could not be launched; opened MAKAUT in your default browser." if opened else "I couldn't open the MAKAUT website."
+            self.memory.add("user", user_text)
+            self.memory.add("assistant", reply)
+            return reply
+
         # Check if user instructed JARVIS to create a new skill
         if is_skill_creation_intent(user_text):
             result = self.skill_creator.create_skill(user_prompt=user_text, llm_engine=self.llm)
