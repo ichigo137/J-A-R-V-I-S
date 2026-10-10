@@ -370,6 +370,26 @@ class LLMEngine:
         openai_key = os.environ.get("OPENAI_API_KEY", "")
         gemini_key = os.environ.get("GEMINI_API_KEY", "")
 
+        # Local-first: prefer an already-running LM Studio server before any
+        # cloud provider. No API key is needed and the model stays on-device.
+        if self.provider == "auto":
+            try:
+                from openai import OpenAI
+                local_client = OpenAI(
+                    api_key="lm-studio",
+                    base_url=os.environ.get("JARVIS_LOCAL_BASE_URL", "http://127.0.0.1:1234/v1"),
+                    timeout=1.5,
+                    max_retries=0,
+                )
+                available = local_client.models.list().data
+                if available:
+                    self._client = local_client
+                    self._resolved_provider = "lm-studio"
+                    self._resolved_model = self.model or os.environ.get("JARVIS_LOCAL_MODEL") or available[0].id
+                    return
+            except Exception as exc:
+                logger.debug("LM Studio local backend unavailable: %s", exc)
+
         def _fail(provider: str, exc: BaseException) -> None:
             self.resolve_errors.append(f"{provider}: {type(exc).__name__}: {exc}")
             logger.warning(
@@ -605,7 +625,21 @@ class JarvisVoiceAssistant:
         self._speak(text)
 
     def _think(self, user_text: str) -> str:
-        """Generate an LLM response or perform autonomous agent actions."""
+        """Generate an LLM response or perform explicitly requested safe actions."""
+        # Minimal deterministic desktop actions do not depend on an LLM.
+        # Only launch a named, known Windows application on a direct request.
+        lower_text = user_text.lower().strip().rstrip(".!?")
+        if lower_text in {"open notepad", "launch notepad", "start notepad", "open windows notepad"}:
+            import subprocess
+            try:
+                subprocess.Popen(["notepad.exe"])
+                self.memory.add("user", user_text)
+                reply = "Opening Notepad now, sir."
+                self.memory.add("assistant", reply)
+                return reply
+            except OSError as exc:
+                return f"I couldn't open Notepad: {exc}"
+
         # Check if user instructed JARVIS to create a new skill
         if is_skill_creation_intent(user_text):
             result = self.skill_creator.create_skill(user_prompt=user_text, llm_engine=self.llm)
