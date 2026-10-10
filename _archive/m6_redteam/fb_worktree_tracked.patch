@@ -74,7 +74,7 @@ index 6de304c..599d19c 100644
  
  pytestmark = pytest.mark.anyio
  
--API_KEY = "GROQ_API_KEY_REDACTED"
+-API_KEY = ""
 +# Sentinel, not a credential. A real-format Groq key was committed here
 +# (red-team finding F1) and has been REDACTED in the working tree. If it was
 +# ever live it must be rotated at the provider; git history is untouched per

@@ -12,7 +12,7 @@ from jarvis.providers.openai_compatible import OpenAICompatibleAdapter
 
 pytestmark = pytest.mark.anyio
 
-API_KEY = "gsk_" + "0" * 56  # structurally-shaped FAKE key for offline tests
+API_KEY = "test-key-not-a-real-credential"  # inert test value; never a provider credential
 BASE_URL = "https://api.groq.com/openai/v1"
 
 

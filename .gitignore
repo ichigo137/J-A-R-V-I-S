@@ -26,9 +26,11 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# Environments
+# Environments and credentials
 .env
-.venv
+.env.*
+!.env.example
+.venv/
 env/
 venv/
 ENV/

@@ -33,6 +33,7 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+from . import env_config as _env_config  # load optional project .env early
 from .bootstrap import CoreService, ensure_service_started, new_pairing_code
 from .kernel.event_log import EventIntegrityError
 from .kernel.explain import explain_event
