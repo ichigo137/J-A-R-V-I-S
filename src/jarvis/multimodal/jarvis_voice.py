@@ -540,9 +540,11 @@ class JarvisVoiceAssistant:
         llm_model: str | None = None,
         greeting: bool = True,
         verbose: bool = True,
+        on_event: Callable[[str], None] | None = None,
     ) -> None:
         self.verbose = verbose
         self.greeting = greeting
+        self.on_event = on_event
 
         # Core engines
         self.stt = STTEngine(model=stt_model, use_google=use_google_stt)
@@ -562,6 +564,11 @@ class JarvisVoiceAssistant:
         self._turn_count = 0
 
     def _log(self, msg: str) -> None:
+        if self.on_event is not None:
+            try:
+                self.on_event(msg)
+            except Exception:
+                logger.debug("Voice event callback failed", exc_info=True)
         if self.verbose:
             try:
                 print(msg, flush=True)

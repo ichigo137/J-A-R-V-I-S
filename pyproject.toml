@@ -25,6 +25,7 @@ dev = [
 
 [project.scripts]
 jarvis = "jarvis.cli:main"
+jarvis-voice-window = "jarvis.multimodal.voice_window:main"
 
 [project.optional-dependencies]
 audio = [
