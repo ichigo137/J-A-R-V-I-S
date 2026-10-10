@@ -77,12 +77,30 @@ class BrowserAgent:
     def click_images_tab(self) -> str:
         page = self._ensure_browser()
         # Use accessible DOM labels, not screen coordinates or a fixed location.
-        candidates = page.get_by_role("link", name=re.compile(r"^images$", re.I))
-        if candidates.count():
-            candidates.first.click(timeout=5000)
-            page.wait_for_load_state("domcontentloaded", timeout=15000)
-            return f"Opened the Images results tab. Current page: {page.url}"
-        return "I couldn't find an Images tab on the current page."
+        candidates = page.get_by_role("link", name=re.compile(r"images", re.I))
+        try:
+            if candidates.count():
+                candidates.first.click(timeout=5000)
+                page.wait_for_load_state("domcontentloaded", timeout=15000)
+                if "tbm=isch" in page.url or "udm=2" in page.url or "images" in page.url.lower():
+                    return f"Opened the Images results tab. Current page: {page.url}"
+        except Exception:
+            pass
+        # Search engines change their accessible labels frequently; use the query from
+        # the current results URL and navigate directly to its image-results endpoint.
+        from urllib.parse import parse_qs, urlparse
+        parsed = urlparse(page.url)
+        query = parse_qs(parsed.query).get("q", [""])[0]
+        if query and "google." in parsed.netloc:
+            page.goto("https://www.google.com/search?q=" + quote_plus(query) + "&udm=2",
+                      wait_until="domcontentloaded", timeout=45000)
+            if "/sorry/" not in page.url:
+                return f"Opened Google Images for {query}. Current page: {page.url}"
+        if query:
+            page.goto("https://www.bing.com/images/search?q=" + quote_plus(query),
+                      wait_until="domcontentloaded", timeout=45000)
+            return f"Opened image results for {query}. Current page: {page.url}"
+        return "I couldn't identify a search query from the current page, so I didn't change it."
 
     def download_first_visible_image(self) -> str:
         """Download the first visible, non-trivial image from the current page."""
