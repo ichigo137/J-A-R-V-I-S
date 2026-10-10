@@ -64,10 +64,10 @@ See [DEVELOPMENT_CONTEXT.md](file:///f:/JARVIS2.0/DEVELOPMENT_CONTEXT.md) and [p
 
 ## Local model benchmark (developer utility)
 
-With LM Studio running and a language model already loaded, measure one short local inference request and capture latency and memory snapshots:
+With LM Studio running and a language model already loaded, run warm-up plus repeated measurements and save a JSON report:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\benchmark_local_model.py --model qwen2.5-coder-1.5b-unsensored-dpo-i1 --output artifacts\local-model-benchmark.json
+.\.venv\Scripts\python.exe scripts\benchmark_local_model.py --model qwen2.5-coder-1.5b-unsensored-dpo-i1 --warmup-requests 1 --requests 5 --output artifacts\local-model-benchmark.json
 ```
 
-The benchmark does **not** load or unload models. It stops by default when available system RAM is below 1 GiB to avoid stressing a constrained host. The report's process RSS is best-effort and is not a guaranteed peak-memory measurement. Run only after closing memory-heavy applications or unloading oversized models if the guard trips.
+Use `--stream` to measure streaming event arrival / time-to-first-chunk, and `--requests 3` for a shorter run. The benchmark does **not** load or unload models. It stops by default when available system RAM is below 1 GiB. Peak RAM is sampled every 100 ms, so brief spikes can be missed; process RSS is a best-effort process-name match. On an 8 GB host, close memory-heavy apps before running repeated inference.
