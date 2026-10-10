@@ -20,6 +20,8 @@ def home(tmp_path, monkeypatch):
     # so test outcomes never depend on a live backend (module 15 M1.1).
     monkeypatch.delenv("JARVIS_MODEL_API_KEY", raising=False)
     monkeypatch.delenv("JARVIS_MODEL_BASE_URL", raising=False)
+    # Do not let a developer's running LM Studio instance change offline tests.
+    monkeypatch.setattr(cli, "_local_model_backend", lambda: None)
     return tmp_path
 
 

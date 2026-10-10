@@ -484,8 +484,41 @@ def _model_name() -> str:
     return os.environ.get("JARVIS_MODEL_NAME") or DEFAULT_MODEL_NAME
 
 
+# GGUF file size understates runtime memory: reserve extra space for KV cache,
+# compute buffers and runtime overhead. These are conservative estimates, not
+# a guarantee; LM Studio remains responsible for final CPU/GPU placement.
+_LOCAL_MODEL_MEMORY_MULTIPLIER = 1.4
+_LOCAL_MODEL_RUNTIME_OVERHEAD_BYTES = 512 * 1024 * 1024
+_LOCAL_MODEL_AVAILABLE_MEMORY_FRACTION = 0.60
+
+
+def _select_local_model(
+    models: list[dict[str, object]],
+    *,
+    available_memory_bytes: int,
+    requested_model_key: str = "",
+) -> dict[str, object] | None:
+    """Choose the smallest model with a conservative estimate that fits available RAM."""
+    budget = max(0, int(available_memory_bytes * _LOCAL_MODEL_AVAILABLE_MEMORY_FRACTION))
+    candidates: list[dict[str, object]] = []
+    for model in models:
+        if model.get("type") != "llm":
+            continue
+        key = model.get("modelKey")
+        size = model.get("sizeBytes")
+        if not isinstance(key, str) or not key or not isinstance(size, (int, float)) or size <= 0:
+            continue
+        if requested_model_key and key != requested_model_key:
+            continue
+        estimated_runtime_bytes = int(size * _LOCAL_MODEL_MEMORY_MULTIPLIER) + _LOCAL_MODEL_RUNTIME_OVERHEAD_BYTES
+        if estimated_runtime_bytes <= budget:
+            candidates.append(model)
+    candidates.sort(key=lambda model: int(model["sizeBytes"]))
+    return candidates[0] if candidates else None
+
+
 def _ensure_local_model_loaded() -> None:
-    """Load the smallest installed LM Studio model that fits this machine."""
+    """Load the smallest installed LM Studio model that conservatively fits available RAM."""
     if os.environ.get("JARVIS_LOCAL_MODEL_AUTOLOAD", "1").lower() in {"0", "false", "no"}:
         return
     lms = shutil.which("lms") or str(Path.home() / ".lmstudio" / "bin" / "lms.exe")
@@ -497,20 +530,21 @@ def _ensure_local_model_loaded() -> None:
         if loaded:
             return
         listing = subprocess.run([lms, "ls", "--json"], capture_output=True, text=True, timeout=5)
-        models = [item for item in json.loads(listing.stdout or "[]") if item.get("type") == "llm"]
-        if not models:
+        models = json.loads(listing.stdout or "[]")
+        if not isinstance(models, list):
             return
         import psutil
-        budget = int(psutil.virtual_memory().total * 0.35)
+
+        available = int(psutil.virtual_memory().available)
         requested = os.environ.get("JARVIS_LOCAL_MODEL_KEY", "").strip()
-        if requested:
-            candidates = [m for m in models if m.get("modelKey") == requested]
-        else:
-            candidates = [m for m in models if int(m.get("sizeBytes", 0)) <= budget]
-            candidates.sort(key=lambda m: int(m.get("sizeBytes", 0)))
-        if not candidates:
+        selected = _select_local_model(
+            models,
+            available_memory_bytes=available,
+            requested_model_key=requested,
+        )
+        if selected is None:
             return
-        key = str(candidates[0]["modelKey"])
+        key = str(selected["modelKey"])
         # LM Studio chooses CPU/GPU placement from the machine's resources.
         subprocess.run([lms, "load", key, "--yes"], capture_output=True, text=True, timeout=180)
     except (OSError, ValueError, TypeError, subprocess.SubprocessError):
@@ -564,8 +598,10 @@ def _build_model_gateway(service: CoreService):
         if local is not None:
             base_url, model = local
             register_groq_provider(registry)
+            # Keep cloud model selection separate from local runtime IDs:
+            # a configured Groq/OpenAI model name is not valid for LM Studio.
             adapter = OpenAICompatibleAdapter(
-                model=os.environ.get("JARVIS_MODEL_NAME") or model,
+                model=os.environ.get("JARVIS_LOCAL_MODEL_NAME") or model,
                 base_url=base_url,
                 api_key="",
                 allow_anonymous=True,
