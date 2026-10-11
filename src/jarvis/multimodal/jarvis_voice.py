@@ -701,7 +701,27 @@ class JarvisVoiceAssistant:
         # Record the user request exactly once, before model planning.
         self.memory.add("user", user_text)
         try:
-            plan = self.llm.plan_tool(messages=self.memory.get_messages(), tools=browser_tools)
+            # Keep tool selection focused: the full telemetry/persona prompt can
+            # overwhelm small local models and make them ignore available tools.
+            # Conversation history remains available to response generation and the
+            # follow-up planner; this first decision needs only the current request.
+            planner_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "Choose the best available tool for the user's current request. "
+                        "Call browser_search for web searches, browser_images to find/view "
+                        "images, browser_download to save an image from already-open results, "
+                        "browser_inspect to describe the current page, and browser_navigate "
+                        "to open a URL the user asks to visit. For a request combining image "
+                        "search and download, start with browser_images; the application will "
+                        "show you the results before asking you to choose the download action. "
+                        "Use no tool only when the request needs no listed browser action."
+                    ),
+                },
+                {"role": "user", "content": user_text},
+            ]
+            plan = self.llm.plan_tool(messages=planner_messages, tools=browser_tools)
         except Exception as exc:
             self._log(f"  [Tool planner unavailable: {type(exc).__name__}: {exc}]")
             plan = None
