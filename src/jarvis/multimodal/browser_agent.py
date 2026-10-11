@@ -58,8 +58,24 @@ class BrowserAgent:
         page.goto(url, wait_until="domcontentloaded", timeout=45000)
         page.wait_for_timeout(1200)
         title = page.title()
-        if "/sorry/" in page.url or "unusual traffic" in page.locator("body").inner_text(timeout=5000).lower():
-            return f"Google blocked the automated search for {query}. The browser is open, but results were not loaded; I will not claim the search succeeded."
+        body_text = page.locator("body").inner_text(timeout=5000).lower()
+        google_blocked = (
+            "/sorry/" in page.url
+            or "unusual traffic" in body_text
+            or "our systems have detected" in body_text
+            or "recaptcha" in body_text
+            or "verify you are human" in body_text
+        )
+        if google_blocked:
+            # Do not carry Google's anti-bot challenge token into the image query.
+            # Fall back to another provider and report the actual destination.
+            fallback_url = "https://www.bing.com/search?q=" + quote_plus(query)
+            page.goto(fallback_url, wait_until="domcontentloaded", timeout=45000)
+            fallback_title = page.title()
+            fallback_text = page.locator("body").inner_text(timeout=5000).lower()
+            if "captcha" in fallback_text or "verify you are human" in fallback_text:
+                return f"Automated search was blocked by both Google and Bing for {query}; no search results were verified."
+            return f"Google blocked automated search, so opened Bing results for {query}. Page title: {fallback_title}. Current page: {page.url}"
         return f"Opened search results for {query}. Page title: {title}. Current page: {page.url}"
 
     def navigate(self, url: str) -> str:
@@ -116,35 +132,75 @@ class BrowserAgent:
                 if not box or box["width"] < 80 or box["height"] < 80:
                     continue
                 src = image.get_attribute("src") or image.get_attribute("data-src")
-                if not src or src.startswith("data:image/svg"):
+                if not src or src.startswith("data:image/svg") or src.lower().split("?", 1)[0].endswith(".svg"):
                     continue
-                candidates.append((index, image))
+                # Search pages include tiny logos and controls among their <img> tags.
+                # Exclude obvious UI assets so ordinals refer to content images.
+                alt = (image.get_attribute("alt") or "").lower()
+                if any(word in alt for word in ("logo", "icon", "avatar", "spinner")):
+                    continue
+                # If the page exposes semantic image-result labels, use those to avoid
+                # counting search UI artwork and duplicate navigation graphics.
+                if "bing.com/images/" in page.url and alt and "image result" not in alt:
+                    continue
+                if not src.startswith(("http://", "https://")):
+                    continue
+                candidates.append((index, image, src))
             except Exception:
                 continue
         if ordinal < 1 or ordinal > len(candidates):
             return f"Found {len(candidates)} downloadable visible images; image {ordinal} is unavailable, so nothing was downloaded."
-        index, image = candidates[ordinal - 1]
+        index, image, src = candidates[ordinal - 1]
         try:
-            result = image.evaluate("""async (img) => {
-                const src = img.currentSrc || img.src;
-                const response = await fetch(src, {credentials: 'include'});
-                if (!response.ok) throw new Error('Image fetch returned ' + response.status);
-                const blob = await response.blob();
-                return {name: (src.split('/').pop().split('?')[0] || 'page-image').slice(0,100),
-                        type: blob.type || 'image/jpeg',
-                        data: Array.from(new Uint8Array(await blob.arrayBuffer()))};
-            }""")
-            safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", result["name"]) or "page-image"
-            if "." not in safe_name:
-                safe_name += ".jpg"
+            # Download the exact URL used to identify this candidate. Reading
+            # currentSrc later can resolve to a lazy-loaded UI placeholder instead.
+            from urllib.request import Request, urlopen
+            if not src or src.startswith("data:"):
+                return f"Image {ordinal} has no downloadable URL; nothing was saved."
+            response = urlopen(
+                Request(src, headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Referer": page.url,
+                }),
+                timeout=20,
+            )
+            with response:
+                data = response.read()
+                content_type = response.headers.get("Content-Type", "image/jpeg").split(";")[0]
+            if not data:
+                return f"Image {ordinal} returned an empty response; nothing was saved."
+            if content_type == "image/svg+xml" or data.lstrip().lower().startswith(b"<svg"):
+                return f"Image {ordinal} resolved to an SVG interface graphic, not a photo; nothing was saved."
+            from urllib.parse import urlparse, unquote
+            from pathlib import PurePosixPath
+            raw_name = unquote(PurePosixPath(urlparse(src).path).name)
+            safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", raw_name)[:100]
+            if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+                extension = ".webp"
+            elif data.startswith(b"\x89PNG\r\n\x1a\n"):
+                extension = ".png"
+            elif data.startswith(b"\xff\xd8\xff"):
+                extension = ".jpg"
+            elif data.startswith((b"GIF87a", b"GIF89a")):
+                extension = ".gif"
+            else:
+                extension = {
+                    "image/png": ".png",
+                    "image/webp": ".webp",
+                    "image/gif": ".gif",
+                    "image/jpeg": ".jpg",
+                }.get(content_type, ".jpg")
+            if not safe_name or not Path(safe_name).suffix or Path(safe_name).suffix.lower() not in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+                stem = Path(safe_name).stem if safe_name else f"image_{ordinal}"
+                safe_name = f"{stem}{extension}"
             target = self.download_dir / safe_name
             if target.exists():
                 target = self.download_dir / f"{target.stem}_{index}{target.suffix}"
-            target.write_bytes(bytes(result["data"]))
+            target.write_bytes(data)
             if target.stat().st_size == 0:
                 target.unlink(missing_ok=True)
                 return "The selected image returned an empty file; nothing was saved."
-            return f"Downloaded image {ordinal} from the current page to {target}."
+            return f"Downloaded image {ordinal} from the current page to {target} ({target.stat().st_size} bytes)."
         except Exception as exc:
             return f"Could not download image {ordinal}: {exc}"
 
