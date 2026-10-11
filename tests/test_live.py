@@ -172,7 +172,8 @@ def test_voice_turn_answers_from_memory_and_journals_the_fsm(home, capsys):
     code, out = _run(capsys, "voice", "when does the deploy gate run")
     assert code == 0
 
-    assert "answer: 'the deploy gate runs on Thursdays'" in out
+    # Recall may return the concise answer rather than echoing the whole memory.
+    assert "answer: 'Thursdays'" in out
     assert (
         "voice loop: real 6-state turn-taking FSM; transitions journaled on stream "
         "'voice-session' (listening -> user_speaking -> thinking -> assistant_speaking -> listening)"

@@ -379,14 +379,9 @@ def test_unenforced_claim_ignores_comments_and_docstrings(tmp_path: Path) -> Non
 #: provider, not a requirement.
 _KNOWN_CRITICAL_IMPORTS = frozenset(
     {
-        "src/jarvis/multimodal/jarvis_voice.py:387 groq",
-        "src/jarvis/multimodal/jarvis_voice.py:632 speech_recognition",
-        "src/jarvis/multimodal/neural_tts.py:106 edge_tts",
+        "src/jarvis/multimodal/jarvis_voice.py:418 groq",
         "src/jarvis/multimodal/neural_tts.py:145 pydub",
         "src/jarvis/multimodal/neural_tts.py:157 soundfile",
-        "src/jarvis/multimodal/neural_tts.py:176 pyttsx3",
-        "src/jarvis/ui/voice_listener.py:75 win32com.client",
-        "src/jarvis/ui/voice_listener.py:128 pyttsx3",
     }
 )
 

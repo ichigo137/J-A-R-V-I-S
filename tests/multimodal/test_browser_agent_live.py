@@ -25,8 +25,12 @@ def test_live_search_then_inspect():
         greeting=False,
         verbose=True,
     )
-    if assistant.llm._client is None:
-        pytest.skip("JARVIS could not initialize the local OpenAI-compatible client")
+    # Resolve lazily before checking: LLMEngine initializes providers on first use.
+    if not assistant.llm.is_online:
+        pytest.skip(
+            "JARVIS could not initialize the local OpenAI-compatible client: "
+            + "; ".join(assistant.llm.resolve_errors)
+        )
 
     # Never let a live smoke test wait the engine's normal 120-second timeout.
     assistant.llm._client = assistant.llm._client.with_options(timeout=20.0, max_retries=0)
