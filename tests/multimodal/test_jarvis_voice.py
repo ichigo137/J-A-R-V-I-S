@@ -443,6 +443,48 @@ class TestModelToolPlanning:
 
         assistant._browser_agent.download_visible_image.assert_called_once_with(2)
         assert "Downloaded image 2" in reply
+        # The planner must receive the observed browser state before choosing a download.
+        assert assistant.llm.plan_tool.call_count == 2
+        followup_messages = assistant.llm.plan_tool.call_args_list[1].kwargs["messages"]
+        assert any("Opened image results for lemon." in message["content"] for message in followup_messages)
+
+    def test_browser_tool_failure_is_reported_and_remembered(self):
+        from jarvis.multimodal.jarvis_voice import JarvisVoiceAssistant
+
+        assistant = JarvisVoiceAssistant(llm_provider="offline", greeting=False, verbose=False)
+        assistant.llm.plan_tool = lambda **kwargs: {
+            "name": "browser_search", "arguments": {"query": "weather"}
+        }
+        assistant._browser_agent = MagicMock()
+        assistant._browser_agent.search.side_effect = RuntimeError("browser timed out")
+
+        reply = assistant._think("search for weather")
+
+        assert "Browser action failed" in reply
+        assert "browser timed out" in reply
+        messages = assistant.memory.get_messages()
+        assert messages[-1]["role"] == "assistant"
+        assert messages[-1]["content"] == reply
+        assert "success" not in reply.lower()
+
+    def test_compound_workflow_reports_when_followup_planner_cannot_choose_download(self):
+        from jarvis.multimodal.jarvis_voice import JarvisVoiceAssistant
+
+        assistant = JarvisVoiceAssistant(llm_provider="offline", greeting=False, verbose=False)
+        assistant.llm.plan_tool = MagicMock(side_effect=[
+            {"name": "browser_images", "arguments": {"query": "lemon"}},
+            None,
+        ])
+        assistant._browser_agent = MagicMock()
+        assistant._browser_agent.search.return_value = "Opened search results for lemon."
+        assistant._browser_agent.click_images_tab.return_value = "Opened image results for lemon."
+
+        reply = assistant._think("search for lemon images and download the second image")
+
+        assert "opened the image results" in reply.lower()
+        assert "did not produce a safe download action" in reply.lower()
+        assistant._browser_agent.download_visible_image.assert_not_called()
+        assert assistant.memory.get_messages()[-1]["content"] == reply
 
 
 class TestJarvisPersona:
