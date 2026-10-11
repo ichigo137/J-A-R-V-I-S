@@ -462,6 +462,41 @@ class LLMEngine:
         self._resolved_provider = "offline"
         self._resolved_model = "none"
 
+    def plan_tool(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        tools: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        """Ask the configured model to choose a tool; return validated call arguments.
+
+        Tool calls are proposals only. The caller enforces explicit user constraints,
+        validates URLs/arguments, performs effects, and uses observed tool output as truth.
+        """
+        self._resolve()
+        if self._client is None:
+            return None
+        response = self._client.chat.completions.create(
+            model=self._resolved_model,
+            messages=messages,
+            tools=tools,
+            tool_choice="auto",
+            temperature=0,
+            max_tokens=min(self.max_tokens, 256),
+        )
+        choice = response.choices[0]
+        if choice.finish_reason != "tool_calls" or not choice.message.tool_calls:
+            return None
+        call = choice.message.tool_calls[0]
+        try:
+            arguments = json.loads(call.function.arguments or "{}")
+        except (TypeError, json.JSONDecodeError):
+            logger.warning("Local model returned malformed tool arguments for %s", call.function.name)
+            return None
+        if not isinstance(arguments, dict):
+            return None
+        return {"name": call.function.name, "arguments": arguments}
+
     def generate(self, messages: list[dict[str, str]]) -> str:
         """Generate a response from conversation messages."""
         self._resolve()
@@ -633,49 +668,116 @@ class JarvisVoiceAssistant:
         import subprocess
         import webbrowser
 
-        # Browser tasks use a real, persistent Playwright-controlled Firefox session.
-        # The model is not allowed to fabricate completion; tool output becomes the reply.
+        # Browser actions are proposed by the local model through tool calling.
+        # Deterministic validation preserves explicit user constraints before any side effect.
         normalized = re.sub(r"\s+", " ", lower_text).strip()
-        browser_download_intent = bool(re.search(
-            r"\b(download|save)\b.*\b(image|photo|picture)\b|\b(first|top)\s+(image|photo|picture)\b.*\b(download|save)\b",
-            normalized,
-        ))
-        browser_images_intent = bool(re.search(
-            r"\b(images|image results|images tab)\b", normalized
-        ) and re.search(r"\b(go to|open|switch|show|click)\b", normalized))
-        compound_search = re.fullmatch(
-            r"(?:please )?(?:(?:open|launch|start) firefox and )?(?:search for|google|look up) (.+?)(?: in firefox| on firefox| in browser)?[.! ]*",
+        browser_tools = [
+            {"type": "function", "function": {
+                "name": "browser_search",
+                "description": "Search the browser for a query. Use for a web search request.",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"], "additionalProperties": False},
+            }},
+            {"type": "function", "function": {
+                "name": "browser_images",
+                "description": "Open image search results for the query. Use when the user asks to view/find image results.",
+                "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"], "additionalProperties": False},
+            }},
+            {"type": "function", "function": {
+                "name": "browser_download",
+                "description": "Download an image from the currently visible image results by 1-based ordinal. Use when the user asks to download/save an image. Do not use a default ordinal if the request has an explicit ordinal.",
+                "parameters": {"type": "object", "properties": {"ordinal": {"type": "integer"}}, "required": ["ordinal"], "additionalProperties": False},
+            }},
+            {"type": "function", "function": {
+                "name": "browser_inspect",
+                "description": "Describe the currently open browser page and its visible content.",
+                "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            }},
+            {"type": "function", "function": {
+                "name": "browser_navigate",
+                "description": "Navigate to a user-requested web URL.",
+                "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"], "additionalProperties": False},
+            }},
+        ]
+        # Record the user request exactly once, before model planning.
+        self.memory.add("user", user_text)
+        try:
+            plan = self.llm.plan_tool(messages=self.memory.get_messages(), tools=browser_tools)
+        except Exception as exc:
+            self._log(f"  [Tool planner unavailable: {type(exc).__name__}: {exc}]")
+            plan = None
+
+        # A model proposal is never permission to violate explicit task constraints.
+        ordinal_words = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5, "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10, "last": -1}
+        explicit_ordinal = None
+        ordinal_token = r"(\d+|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|last)"
+        ordinal_match = re.search(
+            rf"\b{ordinal_token}\b\s+(?:number\s+)?(?:image|photo|picture)\b|\b(?:image|photo|picture)\s+(?:number\s+)?{ordinal_token}\b",
             normalized,
         )
-        if browser_download_intent or browser_images_intent or compound_search:
+        if ordinal_match:
+            token = next((group for group in ordinal_match.groups() if group), "")
+            explicit_ordinal = int(token) if token.isdigit() else ordinal_words.get(token)
+
+        if plan and plan.get("name") in {"browser_search", "browser_images", "browser_download", "browser_inspect", "browser_navigate"}:
+            name, args = plan["name"], plan["arguments"]
             try:
+                if name == "browser_download" and explicit_ordinal is not None:
+                    proposed = args.get("ordinal")
+                    if proposed not in (None, explicit_ordinal):
+                        return f"I understood that you requested image {explicit_ordinal}, but the model proposed image {proposed}. I won't download a different image."
+                    args["ordinal"] = explicit_ordinal
+                if name == "browser_download" and explicit_ordinal == -1:
+                    return "I can't safely identify the last image from the current results yet. Please ask for a numbered image, or let me inspect the results first."
                 if self._browser_agent is None:
                     from .browser_agent import BrowserAgent
                     self._browser_agent = BrowserAgent()
-                if browser_download_intent:
-                    ordinal_match = re.search(
-                        r"\b(\d+|first|second|third|fourth|fifth|last)\b.*\b(image|photo|picture)\b|\b(image|photo|picture)\b.*\b(\d+|first|second|third|fourth|fifth|last)\b",
-                        normalized,
-                    )
-                    ordinal_words = {"first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5}
-                    ordinal = 1
-                    if ordinal_match:
-                        token = ordinal_match.group(1) or ordinal_match.group(4) or ""
-                        ordinal = int(token) if token.isdigit() else (ordinal_words.get(token, -1) if token == "last" else ordinal_words.get(token, 1))
-                    reply = self._browser_agent.download_visible_image(ordinal)
-                elif browser_images_intent:
-                    reply = self._browser_agent.click_images_tab()
+                if name == "browser_search":
+                    reply = self._browser_agent.search(str(args["query"]).strip())
+                elif name == "browser_images":
+                    reply = self._browser_agent.search(str(args["query"]).strip())
+                    if "opened search results" in reply.lower() or "opened bing results" in reply.lower():
+                        reply = self._browser_agent.click_images_tab()
+                    # Compound requests continue through the model tool loop. The model
+                    # observes the actual browser result first; any later download still
+                    # passes through explicit-ordinal validation above.
+                    wants_download = bool(re.search(r"\b(download|save)\b", normalized) and re.search(r"\b(image|photo|picture)\b", normalized))
+                    if wants_download:
+                        followup_messages = self.memory.get_messages() + [
+                            {"role": "assistant", "content": f"Browser tool result: {reply}"},
+                            {"role": "user", "content": "Continue the original request using the observed browser state. If the user requested an image download, call browser_download with the exact requested ordinal. Do not repeat search unless required."},
+                        ]
+                        followup = self.llm.plan_tool(messages=followup_messages, tools=browser_tools)
+                        if followup and followup.get("name") == "browser_download":
+                            follow_args = followup.get("arguments", {})
+                            if explicit_ordinal is not None:
+                                # The user's explicit ordinal is authoritative, even when a
+                                # weaker model proposes a different index on the follow-up.
+                                follow_args["ordinal"] = explicit_ordinal
+                            if explicit_ordinal == -1:
+                                return "Image results are open, but I can't safely identify the last image yet. Please request a numbered image."
+                            reply = self._browser_agent.download_visible_image(int(follow_args.get("ordinal", 1)))
+                        elif not followup:
+                            reply = f"{reply} I opened the image results, but the local model did not produce a safe download action."
+                elif name == "browser_download":
+                    if explicit_ordinal is not None and args.get("ordinal") != explicit_ordinal:
+                        return "The requested image number could not be preserved; nothing was downloaded."
+                    reply = self._browser_agent.download_visible_image(int(args.get("ordinal", 1)))
+                elif name == "browser_inspect":
+                    reply = self._browser_agent.inspect_page()
                 else:
-                    query = compound_search.group(1).strip()
-                    reply = self._browser_agent.search(query)
+                    url = str(args.get("url", "")).strip()
+                    if not re.match(r"^https?://", url, re.I):
+                        return "I can only navigate to a valid HTTP or HTTPS URL. Nothing was opened."
+                    reply = self._browser_agent.navigate(url)
             except Exception as exc:
                 reply = f"Browser action failed: {exc}"
-            self.memory.add("user", user_text)
             self.memory.add("assistant", reply)
             return reply
 
         # General Windows folder/file-explorer intent: resolve the target dynamically.
         if "explorer" in normalized or "file explorer" in normalized:
+            if self.memory.turn_count and self.memory._turns[-1].role == "user" and self.memory._turns[-1].content == user_text:
+                self.memory._turns.pop()
             import os
             from pathlib import Path
             target = None
@@ -725,6 +827,8 @@ class JarvisVoiceAssistant:
             "launch spotify": (["cmd", "/c", "start", "", "spotify:"], "Spotify"),
         }
         if lower_text in app_commands:
+            if self.memory.turn_count and self.memory._turns[-1].role == "user" and self.memory._turns[-1].content == user_text:
+                self.memory._turns.pop()
             command, app_name = app_commands[lower_text]
             try:
                 subprocess.Popen(command, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -746,7 +850,6 @@ class JarvisVoiceAssistant:
             url = website_commands[lower_text]
             opened = webbrowser.open(url)
             reply = f"Opened {url} in your default browser." if opened else f"Couldn't confirm browser launch for {url}."
-            self.memory.add("user", user_text)
             self.memory.add("assistant", reply)
             return reply
 
@@ -757,83 +860,16 @@ class JarvisVoiceAssistant:
                 pass
             opened = webbrowser.open("https://makaut.ac.in/")
             reply = "Requested Firefox launch and opened the MAKAUT website in the default browser." if opened else "Firefox launch requested, but browser navigation could not be confirmed."
-            self.memory.add("user", user_text)
-            self.memory.add("assistant", reply)
-            return reply
-
-        # Handle legacy browser/search requests before LLM chat.
-        from urllib.parse import quote_plus
-
-        normalized = re.sub(r"\s+", " ", lower_text).strip()
-        # Accept compound imperative commands, e.g. "open firefox and search for lemon".
-        compound_search = re.fullmatch(
-            r"(?:please )?(?:open|launch|start) firefox and (?:search for|google|look up) (.+?)[.! ]*",
-            normalized,
-        )
-        if compound_search:
-            query = compound_search.group(1).strip()
-            url = "https://www.google.com/search?q=" + quote_plus(query)
-            try:
-                subprocess.Popen(
-                    ["cmd", "/c", "start", "", "firefox", url],
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
-                reply = f"Opened a Google search for {query} in Firefox."
-            except OSError as exc:
-                reply = f"I couldn't launch Firefox: {exc}"
-            self.memory.add("user", user_text)
-            self.memory.add("assistant", reply)
-            return reply
-
-        search_match = re.fullmatch(
-            r"(?:please )?(?:search for|google|look up) (.+?)(?: in firefox| on firefox| in browser)?",
-            normalized,
-        )
-        if search_match:
-            query = search_match.group(1).strip()
-            # Don't reinterpret app/site opening commands as web searches.
-            if query and not query.startswith(("firefox", "notepad", "spotify")):
-                url = "https://www.google.com/search?q=" + quote_plus(query)
-                try:
-                    subprocess.Popen(
-                        ["cmd", "/c", "start", "", "firefox", url],
-                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                    )
-                    reply = f"Searching Firefox for {query}."
-                except OSError:
-                    opened = webbrowser.open(url)
-                    reply = f"Firefox could not be launched; opened the search in your default browser." if opened else "I couldn't open a browser for that search."
-                self.memory.add("user", user_text)
-                self.memory.add("assistant", reply)
-                return reply
-
-        site_match = re.fullmatch(
-            r"(?:please )?(?:open|go to|navigate to) (?:the )?(?:makaut|macout)(?: website| site)?(?: in firefox)?",
-            normalized,
-        )
-        if site_match:
-            url = "https://makaut.ac.in/"
-            try:
-                subprocess.Popen(
-                    ["cmd", "/c", "start", "", "firefox", url],
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
-                reply = "Opening the MAKAUT website in Firefox."
-            except OSError:
-                opened = webbrowser.open(url)
-                reply = "Firefox could not be launched; opened MAKAUT in your default browser." if opened else "I couldn't open the MAKAUT website."
-            self.memory.add("user", user_text)
             self.memory.add("assistant", reply)
             return reply
 
         # Check if user instructed JARVIS to create a new skill
         if is_skill_creation_intent(user_text):
             result = self.skill_creator.create_skill(user_prompt=user_text, llm_engine=self.llm)
-            self.memory.add("user", user_text)
             self.memory.add("assistant", result.message)
             return result.message
 
-        self.memory.add("user", user_text)
+        # The turn is already in memory; do not append it a second time.
         messages = self.memory.get_messages()
         response = self.llm.generate(messages)
         if response:

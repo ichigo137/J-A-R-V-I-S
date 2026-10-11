@@ -349,6 +349,102 @@ class TestJarvisVoiceAssistant:
         assert not assistant._running
 
 
+class TestModelToolPlanning:
+    """Regression tests for model-proposed browser tools and constraints."""
+
+    def test_plan_tool_parses_function_call(self):
+        from jarvis.multimodal.jarvis_voice import LLMEngine
+
+        engine = LLMEngine(provider="offline")
+        call = MagicMock()
+        call.function.name = "browser_search"
+        call.function.arguments = '{"query":"lemons"}'
+        response = MagicMock()
+        response.choices[0].finish_reason = "tool_calls"
+        response.choices[0].message.tool_calls = [call]
+        engine._client = MagicMock()
+        engine._resolved_model = "local-test"
+        engine._client.chat.completions.create.return_value = response
+
+        result = engine.plan_tool(messages=[{"role": "user", "content": "search lemons"}], tools=[])
+
+        assert result == {"name": "browser_search", "arguments": {"query": "lemons"}}
+
+    def test_plan_tool_returns_none_when_model_chats(self):
+        from jarvis.multimodal.jarvis_voice import LLMEngine
+
+        engine = LLMEngine(provider="offline")
+        response = MagicMock()
+        response.choices[0].finish_reason = "stop"
+        response.choices[0].message.tool_calls = None
+        engine._client = MagicMock()
+        engine._resolved_model = "local-test"
+        engine._client.chat.completions.create.return_value = response
+
+        assert engine.plan_tool(messages=[{"role": "user", "content": "hello"}], tools=[]) is None
+
+    def test_explicit_ordinal_mismatch_never_executes_browser(self):
+        from jarvis.multimodal.jarvis_voice import JarvisVoiceAssistant
+
+        assistant = JarvisVoiceAssistant(llm_provider="offline", greeting=False, verbose=False)
+        assistant.llm.plan_tool = lambda **kwargs: {
+            "name": "browser_download", "arguments": {"ordinal": 1}
+        }
+        assistant._browser_agent = MagicMock()
+
+        reply = assistant.single_turn("download the second image")
+
+        assert "won't download a different image" in reply
+        assistant._browser_agent.download_visible_image.assert_not_called()
+
+    def test_explicit_ordinal_is_preserved_for_tool_call(self):
+        from jarvis.multimodal.jarvis_voice import JarvisVoiceAssistant
+
+        assistant = JarvisVoiceAssistant(llm_provider="offline", greeting=False, verbose=False)
+        assistant.llm.plan_tool = lambda **kwargs: {
+            "name": "browser_download", "arguments": {"ordinal": 2}
+        }
+        assistant._browser_agent = MagicMock()
+        assistant._browser_agent.download_visible_image.return_value = "Downloaded image 2 to a verified file."
+
+        reply = assistant.single_turn("download the second image")
+
+        assistant._browser_agent.download_visible_image.assert_called_once_with(2)
+        assert "Downloaded image 2" in reply
+
+    def test_invalid_navigation_url_is_rejected_before_browser(self):
+        from jarvis.multimodal.jarvis_voice import JarvisVoiceAssistant
+
+        assistant = JarvisVoiceAssistant(llm_provider="offline", greeting=False, verbose=False)
+        assistant.llm.plan_tool = lambda **kwargs: {
+            "name": "browser_navigate", "arguments": {"url": "file:///C:/private.txt"}
+        }
+        assistant._browser_agent = MagicMock()
+
+        reply = assistant.single_turn("open my local file")
+
+        assert "valid HTTP or HTTPS URL" in reply
+        assistant._browser_agent.navigate.assert_not_called()
+
+    def test_compound_image_download_continues_with_exact_ordinal(self):
+        from jarvis.multimodal.jarvis_voice import JarvisVoiceAssistant
+
+        assistant = JarvisVoiceAssistant(llm_provider="offline", greeting=False, verbose=False)
+        assistant.llm.plan_tool = MagicMock(side_effect=[
+            {"name": "browser_images", "arguments": {"query": "lemon"}},
+            {"name": "browser_download", "arguments": {"ordinal": 1}},
+        ])
+        assistant._browser_agent = MagicMock()
+        assistant._browser_agent.search.return_value = "Opened search results for lemon."
+        assistant._browser_agent.click_images_tab.return_value = "Opened image results for lemon."
+        assistant._browser_agent.download_visible_image.return_value = "Downloaded image 2 to a verified file."
+
+        reply = assistant.single_turn("search for lemon images and download the second image")
+
+        assistant._browser_agent.download_visible_image.assert_called_once_with(2)
+        assert "Downloaded image 2" in reply
+
+
 class TestJarvisPersona:
     """Tests for the JARVIS persona constants."""
 
